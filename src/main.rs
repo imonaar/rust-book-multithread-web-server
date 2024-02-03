@@ -12,7 +12,7 @@ fn main() {
     let listener = TcpListener::bind("127.0.0.1:7878").unwrap();
     let pool = ThreadPool::new(4);
 
-    for stream in listener.incoming() {
+    for stream in listener.incoming().take(2) {
         //can we assume that stream in this case is a single request?
         let stream = stream.unwrap();
 

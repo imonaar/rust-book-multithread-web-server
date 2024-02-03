@@ -5,7 +5,7 @@ use std::{
 
 pub struct ThreadPool {
     workers: Vec<Worker>,
-    sender: mpsc::Sender<Job>,
+    sender: Option<mpsc::Sender<Job>>,
 }
 
 type Job = Box<dyn FnOnce() + Send + 'static>;
@@ -37,7 +37,11 @@ impl ThreadPool {
             //For each new worker, we clone the Arc to bump the reference count so the workers can share ownership of the receiver.
             workers.push(Worker::new(id, Arc::clone(&receiver)))
         }
-        ThreadPool { workers, sender }
+
+        ThreadPool {
+            workers,
+            sender: Some(sender),
+        }
     }
 
     /*
@@ -62,7 +66,7 @@ impl ThreadPool {
         let job = Box::new(f);
 
         //send the closure i.e function to be executed by the thread bool
-        self.sender.send(job).unwrap()
+        self.sender.as_ref().unwrap().send(job).unwrap()
         /*
             There is a little bit of indirection in this code?
             Where does send send its job? Looking at it from the new function is confusing;
@@ -75,6 +79,22 @@ impl ThreadPool {
     }
 }
 
+impl Drop for ThreadPool {
+    fn drop(&mut self) {
+        /*
+           drop the sender first  before dropping the workers
+           Dropping sender closes the channel, which indicates no more messages will be sent
+           When that happens, all the calls to recv that the workers do in the infinite loop will return an error
+        */
+        drop(self.sender.take());
+        for worker in &mut self.workers {
+            println!("Shutting down worker {}", worker.id);
+            if let Some(thread) = worker.thread.take() {
+                thread.join().unwrap()
+            }
+        }
+    }
+}
 
 /*
     External code (like our server in src/main.rs) doesn’t need to know the implementation details regarding
@@ -82,24 +102,41 @@ impl ThreadPool {
 */
 struct Worker {
     id: usize,
-    thread: thread::JoinHandle<Arc<Mutex<mpsc::Receiver<Job>>>>,
+    thread: Option<thread::JoinHandle<()>>,
+    // thread: thread::JoinHandle<Arc<Mutex<mpsc::Receiver<Job>>>>,
 }
 
 impl Worker {
     fn new(id: usize, receiver: Arc<Mutex<mpsc::Receiver<Job>>>) -> Worker {
         // If the operating system can’t create a thread because there aren’t enough system resources, thread::spawn will panic.
         let thread = thread::spawn(move || loop {
-            /*
-                If we get the lock on the mutex, we call recv to receive a Job from the channel.
-                The call to recv blocks, so if there is no job yet, the current thread will wait until a job becomes available.
-                The Mutex<T> ensures that only one Worker thread at a time is trying to request a job
-            */
-            let job = receiver.lock().unwrap().recv().unwrap();
-            println!("Worker {id} got a job; executing.");
-            job() // This is our handle_connection(stream) in this case
+            // /*
+            //     If we get the lock on the mutex, we call recv to receive a Job from the channel.
+            //     The call to recv blocks, so if there is no job yet, the current thread will wait until a job becomes available.
+            //     The Mutex<T> ensures that only one Worker thread at a time is trying to request a job
+            // */
+            // let job = receiver.lock().unwrap().recv().unwrap();
+            // println!("Worker {id} got a job; executing.");
+            // job() // This is our handle_connection(stream) in this case
 
-            //we loop to keep the thread alive and wait for other jobs
+            // //we loop to keep the thread alive and wait for other jobs
+
+            let message = receiver.lock().unwrap().recv();
+            match message {
+                Ok(job) => {
+                    println!("Worker {id} got a job; executing.");
+
+                    job();
+                }
+                Err(_) => {
+                    println!("Worker {id} disconnected; shutting down.");
+                    break;
+                }
+            }
         });
-        Worker { id, thread }
+        Worker {
+            id,
+            thread: Some(thread),
+        }
     }
 }
