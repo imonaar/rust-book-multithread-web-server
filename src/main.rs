@@ -2,15 +2,27 @@ use std::{
     fs,
     io::{prelude::*, BufReader},
     net::{TcpListener, TcpStream},
+    thread,
+    time::Duration,
 };
+
+use server::ThreadPool;
 
 fn main() {
     let listener = TcpListener::bind("127.0.0.1:7878").unwrap();
+    let pool = ThreadPool::new(4);
 
     for stream in listener.incoming() {
+        //can we assume that stream in this case is a single request?
         let stream = stream.unwrap();
-        println!("Connection Established");
-        handle_connection(stream)
+
+        //then we execute that reuest on new thread? if a thread is available?
+
+        //execute function so it takes the closure it’s given and gives it to an idle thread in the pool to run.
+        //handleconnection is the function to execute when the thread is created
+
+        //we want to create the threads and have them wait for code that we’ll send later.
+        pool.execute(|| handle_connection(stream));
     }
 }
 
@@ -51,15 +63,27 @@ fn handle_connection(mut stream: TcpStream) {
     //     stream.write_all(response.as_bytes()).unwrap();
     // }
 
-    let (status_line, filename) = if request_line == "GET / HTTP/1.1" {
-        ("HTTP/1.1 200 OK", "hello.html")
-    } else {
-        ("HTTP/1.1 404 NOT FOUND", "404.html")
+    // let (status_line, filename) = if request_line == "GET / HTTP/1.1" {
+    //     ("HTTP/1.1 200 OK", "hello.html")
+    // } else {
+    //     ("HTTP/1.1 404 NOT FOUND", "404.html")
+    // };
+
+    /*
+        We need to explicitly match on a slice of request_line to pattern match against the string literal values;
+        match doesn’t do automatic referencing and dereferencing like the equality method does.
+    */
+    let (status_line, filename) = match &request_line[..] {
+        "GET / HTTP/1.1" => ("HTTP/1.1 200 OK", "hello.html"),
+        "GET /sleep HTTP/1.1" => {
+            thread::sleep(Duration::from_secs(5));
+            ("HTTP/1.1 200 OK", "hello.html")
+        }
+        _ => ("HTTP/1.1 404 NOT FOUND", "404.html"),
     };
 
     let contents = fs::read_to_string(filename).unwrap();
     let len = contents.len();
     let response = format!("{status_line}\r\nContent-Length: {len}\r\n\r\n{contents}");
     stream.write_all(response.as_bytes()).unwrap();
-
 }
